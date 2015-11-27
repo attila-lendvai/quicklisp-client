@@ -66,10 +66,14 @@ PATHNAME. Current format is one native namestring per line."
 and has a newer timestamp than PATHNAME."
   (let* ((file (system-index-file pathname))
          (probed (probe-file file)))
-    (when (and probed
-               (<= (directory-write-date pathname)
-                   (file-write-date probed)))
-      probed)))
+    (and probed
+         (<= (directory-write-date pathname)
+             (file-write-date probed))
+         (every (lambda (child)
+                  (<= (directory-write-date child)
+                      (file-write-date probed)))
+                (directory-entries pathname))
+         probed)))
 
 (defun ensure-system-index (pathname)
   "Find or create a system index file for PATHNAME."
