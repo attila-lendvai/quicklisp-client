@@ -61,6 +61,59 @@
   system given to load is not available via ASDF or a Quicklisp
   dist."))
 
+(defparameter *attempt-installing* nil)
+
+(defmacro with-automatic-install ((&key (prompt nil prompt-p)) &body body)
+  `(let ((*attempt-installing* t)
+         (*quickload-prompt* ,(if prompt-p
+                                  prompt
+                                  '*quickload-prompt*)))
+     ,@body))
+
+(defun system-definition-searcher (name)
+  "Like FIND-ASDF-SYSTEM-FILE, but this function can be used in
+ASDF:*SYSTEM-DEFINITION-SEARCH-FUNCTIONS*; it will only return system
+file names if they match NAME."
+  (declare (special *tried-so-far*))
+  (labels
+      ((try-finding-it ()
+         (let ((system-file (find-asdf-system-file name)))
+           (when (and system-file
+                      (string= (pathname-name system-file) name))
+             system-file)))
+       (body ()
+         (or (try-finding-it)
+             (when *attempt-installing*
+               ;; Even though we are installed last among the hooks,
+               ;; ASDF still consults the preloaded systems registry
+               ;; after it calls the hooks, so we need to explicitly
+               ;; call SYSDEF-PRELOADED-SYSTEM-SEARCH if we want to only
+               ;; initiate download as a very last resort in the
+               ;; ASDF:FIND-SYSTEM process.
+               (or (asdf::sysdef-preloaded-system-search name)
+                   (unless (gethash name *tried-so-far*)
+                     (setf (gethash name *tried-so-far*) t)
+                     (let ((system (find-system name)))
+                       (when (and system
+                                  (not (installedp system)))
+                         (when (or (not quicklisp-client::*quickload-prompt*)
+                                   (progn
+                                     (format t "~&Quicklisp is about to download and install: ~A~&  release: ~A~&  from distribution: ~A~%"
+                                             (short-description system)
+                                             (short-description (release system))
+                                             (short-description (dist system)))
+                                     (press-enter-to-continue)))
+                           (ensure-installed (release system)))))
+                     (try-finding-it)))))))
+    (if (boundp '*tried-so-far*)
+        (body)
+        ;; only install these once in any dynamic extent
+        (with-simple-restart (abort "Give up on loading ~S" name)
+          (let ((*tried-so-far* (make-hash-table :test 'equalp)))
+            (declare (special *tried-so-far*))
+            (body))))))
+
+#+nil ;; TODO delme
 (defun compute-load-strategy (name)
   (setf name (string-downcase name))
   (let ((asdf-systems '())
@@ -69,7 +122,8 @@
                (let ((asdf-system (asdf:find-system name nil))
                      (quicklisp-system (find-system name)))
                  (cond (asdf-system
-                        (push asdf-system asdf-systems))
+                        (unless (asdf:component-loaded-p asdf-system)
+                          (push asdf-system asdf-systems)))
                        (quicklisp-system
                         (push quicklisp-system quicklisp-systems)
                         (dolist (subname (required-systems quicklisp-system))
@@ -86,6 +140,7 @@
                    :asdf-systems (remove-duplicates asdf-systems)
                    :quicklisp-systems (remove-duplicates quicklisp-systems))))
 
+#+nil ;; TODO delme
 (defun show-load-strategy (strategy)
   (format t "To load ~S:~%" (name strategy))
   (let ((asdf-systems (asdf-systems strategy))
@@ -97,8 +152,9 @@
       (format t "  Install ~D Quicklisp release~:P:~%" (length releases))
       (show-wrapped-list (mapcar 'name releases)))))
 
+#+nil ;; TODO delme
 (defvar *macroexpand-progress-in-progress* nil)
-
+#+nil ;; TODO delme
 (defun macroexpand-progress-fun (old-hook &key (char #\.)
                                  (chars-per-line 50)
                                  (forms-per-char 250))
@@ -144,7 +200,7 @@
             (terpri)
             (finish-output)))
         (funcall old-hook fun form env)))))
-
+#+nil ;; TODO delme
 (defun call-with-macroexpand-progress (fun)
   (let ((*macroexpand-hook* (if *macroexpand-progress-in-progress*
                                 *macroexpand-hook*
@@ -152,49 +208,13 @@
         (*macroexpand-progress-in-progress* t))
     (funcall fun)
     (terpri)))
-
+#+nil ;; TODO delme
 (defun apply-load-strategy (strategy)
   (map nil 'ensure-installed (quicklisp-releases strategy))
   (call-with-macroexpand-progress
    (lambda ()
      (format t "~&; Loading ~S~%" (name strategy))
      (asdf:oos 'asdf:load-op (name strategy) :verbose nil))))
-
-(defun autoload-system-and-dependencies (name &key prompt)
-  "Try to load the system named by NAME, automatically loading any
-Quicklisp-provided systems first, and catching ASDF missing
-dependencies too if possible."
-  (setf name (string-downcase name))
-  (with-simple-restart (abort "Give up on ~S" name)
-    (let ((strategy (compute-load-strategy name))
-          (tried-so-far (make-hash-table :test 'equalp)))
-      (show-load-strategy strategy)
-      (when (or (not prompt)
-                (press-enter-to-continue))
-        (tagbody
-         retry
-         (handler-case (apply-load-strategy strategy)
-           (asdf:missing-dependency-of-version (c)
-             ;; Nothing Quicklisp can do to recover from this, so just
-             ;; resignal
-             (error c))
-           (asdf:missing-dependency (c)
-             (let ((parent (asdf::missing-required-by c))
-                   (missing (asdf::missing-requires c)))
-               (typecase parent
-                 (asdf:system
-                  (if (gethash missing tried-so-far)
-                     (error "Dependency looping -- already tried to load ~
-                                 ~A" missing)
-                     (setf (gethash missing tried-so-far) missing))
-                  (autoload-system-and-dependencies missing
-                                                   :prompt prompt)
-                  (go retry))
-                 (t
-                  ;; Error isn't from a system dependency, so there's
-                  ;; nothing to autoload
-                  (error c)))))))))
-    name))
 
 (defvar *initial-dist-url*
   "http://beta.quicklisp.org/dist/quicklisp.txt")

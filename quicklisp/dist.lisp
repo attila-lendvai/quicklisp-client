@@ -1022,15 +1022,6 @@ the given NAME."
     (when system
       (installed-asdf-system-file system))))
 
-(defun system-definition-searcher (name)
-  "Like FIND-ASDF-SYSTEM-FILE, but this function can be used in
-ASDF:*SYSTEM-DEFINITION-SEARCH-FUNCTIONS*; it will only return system
-file names if they match NAME."
-  (let ((system-file (find-asdf-system-file name)))
-    (when (and system-file
-               (string= (pathname-name system-file) name))
-      system-file)))
-
 (defun call-with-consistent-dists (fun)
   "Take a snapshot of the available dists and return the same list
 consistently each time ALL-DISTS is called in the dynamic scope of
